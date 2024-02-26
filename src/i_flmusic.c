@@ -21,19 +21,8 @@
 
 #include "fluidsynth.h"
 
-#if (FLUIDSYNTH_VERSION_MAJOR < 2 ||                                           \
-     (FLUIDSYNTH_VERSION_MAJOR == 2 && FLUIDSYNTH_VERSION_MINOR < 2))
-
-typedef int fluid_int_t;
-typedef long fluid_long_long_t;
-
-#else
-
-typedef fluid_long_long_t fluid_int_t;
-
-#endif
-
 #include "SDL_mixer.h"
+#include "SDL_loadso.h"
 
 #include "doomtype.h"
 #include "i_system.h"
@@ -41,6 +30,35 @@ typedef fluid_long_long_t fluid_int_t;
 #include "m_misc.h"
 #include "memio.h"
 #include "mus2mid.h"
+
+
+typedef struct{
+    boolean loaded;
+    void *handle;
+
+    void (*delete_fluid_player)(fluid_player_t*);
+    void (*delete_fluid_synth)(fluid_synth_t*);
+    void (*delete_fluid_settings)(fluid_settings_t*);
+    int (*fluid_player_add_mem)(fluid_player_t*, const void*, size_t);
+    int (*fluid_player_get_status)(fluid_player_t*);
+    int (*fluid_player_play)(fluid_player_t*);
+    int (*fluid_player_set_loop)(fluid_player_t*, int);
+    int (*fluid_player_stop)(fluid_player_t*);
+    int (*fluid_settings_setint)(fluid_settings_t*, const char*, int);
+    int (*fluid_settings_setnum)(fluid_settings_t*, const char*, double);
+    int (*fluid_settings_setstr)(fluid_settings_t*, const char*, const char*);
+    int (*fluid_synth_program_reset)(fluid_synth_t*);
+    void (*fluid_synth_set_gain)(fluid_synth_t*, float);
+    int (*fluid_synth_sfload)(fluid_synth_t*, const char*, int);
+    int (*fluid_synth_system_reset)(fluid_synth_t*);
+    int (*fluid_synth_write_s16)(fluid_synth_t*, int, void*, int, int, void*,
+                                 int, int);
+    fluid_player_t* (*new_fluid_player)(fluid_synth_t*);
+    fluid_settings_t* (*new_fluid_settings)(void);
+    fluid_synth_t* (*new_fluid_synth)(fluid_settings_t*);
+} fluidsynth_interface;
+
+static fluidsynth_interface fs;
 
 char *fsynth_sf_path = "";
 int fsynth_chorus_active = 1;
@@ -65,13 +83,166 @@ static void FL_Mix_Callback(void *udata, Uint8 *stream, int len)
 {
     int result;
 
-    result = fluid_synth_write_s16(synth, len / 4, stream, 0, 2, stream, 1, 2);
+    result =
+        fs.fluid_synth_write_s16(synth, len / 4, stream, 0, 2, stream, 1, 2);
 
     if (result != FLUID_OK)
     {
         fprintf(stderr,
                 "FL_Mix_Callback: Error generating FluidSynth audio.\n");
     }
+}
+
+//#define FLUIDSYNTH_DYNAMIC "libfluidsynth.so"
+
+static void UnloadFluidSynth(void)
+{
+    if (fs.loaded)
+    {
+#ifdef FLUIDSYNTH_DYNAMIC
+        SDL_UnloadObject(fs.handle);
+#endif
+        fs.loaded = false;
+    }
+}
+
+static boolean LoadFluidSynth(void)
+{
+    if (fs.loaded)
+    {
+        return true;
+    }
+
+#ifdef FLUIDSYNTH_DYNAMIC
+    fs.handle = SDL_LoadObject(FLUIDSYNTH_DYNAMIC);
+
+    if (fs.handle == NULL)
+    {
+        return false;
+    }
+
+#define CHECK_FUNC(FUNC) \
+    if (FUNC == NULL) { SDL_UnloadObject(fs.handle); return false; }
+
+    fs.delete_fluid_player =
+        (void (*)(fluid_player_t*))
+        SDL_LoadFunction(fs.handle, "delete_fluid_player");
+    CHECK_FUNC(fs.delete_fluid_player);
+
+    fs.delete_fluid_synth =
+        (void (*)(fluid_synth_t*))
+        SDL_LoadFunction(fs.handle, "delete_fluid_synth");
+    CHECK_FUNC(fs.delete_fluid_synth);
+
+    fs.delete_fluid_settings =
+        (void (*)(fluid_settings_t*))
+        SDL_LoadFunction(fs.handle, "delete_fluid_settings");
+    CHECK_FUNC(fs.delete_fluid_settings);
+
+    fs.fluid_player_add_mem =
+        (int (*)(fluid_player_t*, const void*, size_t))
+        SDL_LoadFunction(fs.handle, "fluid_player_add_mem");
+    CHECK_FUNC(fs.fluid_player_add_mem);
+
+    fs.fluid_player_get_status =
+        (int (*)(fluid_player_t*))
+        SDL_LoadFunction(fs.handle, "fluid_player_get_status");
+    CHECK_FUNC(fs.fluid_player_get_status);
+
+    fs.fluid_player_play =
+        (int (*)(fluid_player_t*))
+        SDL_LoadFunction(fs.handle, "fluid_player_play");
+    CHECK_FUNC(fs.fluid_player_play);
+
+    fs.fluid_player_set_loop =
+        (int (*)(fluid_player_t*, int))
+        SDL_LoadFunction(fs.handle, "fluid_player_set_loop");
+    CHECK_FUNC(fs.fluid_player_set_loop);
+
+    fs.fluid_player_stop =
+        (int (*)(fluid_player_t*))
+        SDL_LoadFunction(fs.handle, "fluid_player_stop");
+    CHECK_FUNC(fs.fluid_player_stop);
+
+    fs.fluid_settings_setint =
+        (int (*)(fluid_settings_t*, const char*, int))
+        SDL_LoadFunction(fs.handle, "fluid_settings_setint");
+    CHECK_FUNC(fs.fluid_settings_setint);
+
+    fs.fluid_settings_setnum =
+        (int (*)(fluid_settings_t*, const char*, double))
+        SDL_LoadFunction(fs.handle, "fluid_settings_setnum");
+    CHECK_FUNC(fs.fluid_settings_setnum);
+
+    fs.fluid_settings_setstr =
+        (int (*)(fluid_settings_t*, const char*, const char*))
+        SDL_LoadFunction(fs.handle, "fluid_settings_setstr");
+    CHECK_FUNC(fs.fluid_settings_setstr);
+
+    fs.fluid_synth_program_reset =
+        (int (*)(fluid_synth_t*))
+        SDL_LoadFunction(fs.handle, "fluid_synth_program_reset");
+    CHECK_FUNC(fs.fluid_synth_program_reset);
+
+    fs.fluid_synth_set_gain =
+        (void (*)(fluid_synth_t*, float))
+        SDL_LoadFunction(fs.handle, "fluid_synth_set_gain");
+    CHECK_FUNC(fs.fluid_synth_set_gain);
+
+    fs.fluid_synth_sfload =
+        (int (*)(fluid_synth_t*, const char*, int))
+        SDL_LoadFunction(fs.handle, "fluid_synth_sfload");
+    CHECK_FUNC(fs.fluid_synth_sfload);
+
+    fs.fluid_synth_system_reset =
+        (int (*)(fluid_synth_t*))
+        SDL_LoadFunction(fs.handle, "fluid_synth_system_reset");
+    CHECK_FUNC(fs.fluid_synth_system_reset);
+
+    fs.fluid_synth_write_s16 =
+        (int (*)(fluid_synth_t*, int, void*, int, int, void*, int, int))
+        SDL_LoadFunction(fs.handle, "fluid_synth_write_s16");
+    CHECK_FUNC(fs.fluid_synth_write_s16);
+
+    fs.new_fluid_player =
+        (fluid_player_t* (*)(fluid_synth_t*))
+        SDL_LoadFunction(fs.handle, "new_fluid_player");
+    CHECK_FUNC(fs.new_fluid_player);
+
+    fs.new_fluid_settings =
+        (fluid_settings_t* (*)(void))
+        SDL_LoadFunction(fs.handle, "new_fluid_settings");
+    CHECK_FUNC(fs.new_fluid_settings);
+
+    fs.new_fluid_synth =
+        (fluid_synth_t* (*)(fluid_settings_t*))
+        SDL_LoadFunction(fs.handle, "new_fluid_synth");
+    CHECK_FUNC(fs.new_fluid_synth);
+
+#else
+    fs.delete_fluid_player = delete_fluid_player;
+    fs.delete_fluid_settings = delete_fluid_settings;
+    fs.delete_fluid_synth = delete_fluid_synth;
+    fs.fluid_player_add_mem = fluid_player_add_mem;
+    fs.fluid_player_get_status = fluid_player_get_status;
+    fs.fluid_player_play = fluid_player_play;
+    fs.fluid_player_set_loop = fluid_player_set_loop;
+    fs.fluid_player_stop = fluid_player_stop;
+    fs.fluid_settings_setint = fluid_settings_setint;
+    fs.fluid_settings_setnum = fluid_settings_setnum;
+    fs.fluid_settings_setstr = fluid_settings_setstr;
+    fs.fluid_synth_program_reset = fluid_synth_program_reset;
+    fs.fluid_synth_set_gain = fluid_synth_set_gain;
+    fs.fluid_synth_sfload = fluid_synth_sfload;
+    fs.fluid_synth_system_reset = fluid_synth_system_reset;
+    fs.fluid_synth_write_s16 = fluid_synth_write_s16;
+    fs.new_fluid_player = new_fluid_player;
+    fs.new_fluid_synth = new_fluid_synth;
+    fs.new_fluid_settings = new_fluid_settings;
+#endif // ifdef FLUIDSYNTH_DYNAMIC
+
+    fs.loaded = true;
+    return true;
 }
 
 static boolean I_FL_InitMusic(void)
@@ -85,39 +256,46 @@ static boolean I_FL_InitMusic(void)
         return false;
     }
 
-    settings = new_fluid_settings();
+    if (!LoadFluidSynth())
+    {
+        fprintf(stderr, "I_FL_InitMusic: Can't load FluidSynth.\n");
+        return false;
+    }
 
-    fluid_settings_setnum(settings, "synth.sample-rate", snd_samplerate);
-    fluid_settings_setstr(settings, "synth.midi-bank-select",
-                          fsynth_midibankselect);
-    fluid_settings_setint(settings, "synth.polyphony", fsynth_polyphony);
+    settings = fs.new_fluid_settings();
 
-    fluid_settings_setint(settings, "synth.chorus.active",
-                          fsynth_chorus_active);
-    fluid_settings_setint(settings, "synth.reverb.active",
-                          fsynth_reverb_active);
+    fs.fluid_settings_setnum(settings, "synth.sample-rate", snd_samplerate);
+    fs.fluid_settings_setstr(settings, "synth.midi-bank-select",
+                             fsynth_midibankselect);
+    fs.fluid_settings_setint(settings, "synth.polyphony", fsynth_polyphony);
+
+    fs.fluid_settings_setint(settings, "synth.chorus.active",
+                             fsynth_chorus_active);
+    fs.fluid_settings_setint(settings, "synth.reverb.active",
+                             fsynth_reverb_active);
 
     if (fsynth_reverb_active)
     {
-        fluid_settings_setnum(settings, "synth.reverb.room-size",
-                              fsynth_reverb_roomsize);
-        fluid_settings_setnum(settings, "synth.reverb.damp",
-                              fsynth_reverb_damp);
-        fluid_settings_setnum(settings, "synth.reverb.width",
-                              fsynth_reverb_width);
-        fluid_settings_setnum(settings, "synth.reverb.level",
-                              fsynth_reverb_level);
+        fs.fluid_settings_setnum(settings, "synth.reverb.room-size",
+                                 fsynth_reverb_roomsize);
+        fs.fluid_settings_setnum(settings, "synth.reverb.damp",
+                                 fsynth_reverb_damp);
+        fs.fluid_settings_setnum(settings, "synth.reverb.width",
+                                 fsynth_reverb_width);
+        fs.fluid_settings_setnum(settings, "synth.reverb.level",
+                                 fsynth_reverb_level);
     }
 
     if (fsynth_chorus_active)
     {
-        fluid_settings_setnum(settings, "synth.chorus.level",
-                              fsynth_chorus_level);
-        fluid_settings_setnum(settings, "synth.chorus.depth",
-                              fsynth_chorus_depth);
-        fluid_settings_setint(settings, "synth.chorus.nr", fsynth_chorus_nr);
-        fluid_settings_setnum(settings, "synth.chorus.speed",
-                              fsynth_chorus_speed);
+        fs.fluid_settings_setnum(settings, "synth.chorus.level",
+                                 fsynth_chorus_level);
+        fs.fluid_settings_setnum(settings, "synth.chorus.depth",
+                                 fsynth_chorus_depth);
+        fs.fluid_settings_setint(settings, "synth.chorus.nr",
+                                 fsynth_chorus_nr);
+        fs.fluid_settings_setnum(settings, "synth.chorus.speed",
+                                 fsynth_chorus_speed);
     }
 
     if (fsynth_gain < 0.0f)
@@ -129,25 +307,27 @@ static boolean I_FL_InitMusic(void)
         fsynth_gain = 10.0f;
     }
 
-    synth = new_fluid_synth(settings);
+    synth = fs.new_fluid_synth(settings);
 
     if (synth == NULL)
     {
         fprintf(stderr,
                 "I_FL_InitMusic: FluidSynth failed to initialize synth.\n");
+        UnloadFluidSynth();
         return false;
     }
 
-    sf_id = fluid_synth_sfload(synth, fsynth_sf_path, true);
+    sf_id = fs.fluid_synth_sfload(synth, fsynth_sf_path, true);
     if (sf_id == FLUID_FAILED)
     {
-        delete_fluid_synth(synth);
+        fs.delete_fluid_synth(synth);
         synth = NULL;
-        delete_fluid_settings(settings);
+        fs.delete_fluid_settings(settings);
         settings = NULL;
         fprintf(stderr,
                 "I_FL_InitMusic: Error loading FluidSynth soundfont: '%s'.\n",
                 fsynth_sf_path);
+        UnloadFluidSynth();
         return false;
     }
 
@@ -164,7 +344,7 @@ static void I_FL_SetMusicVolume(int volume)
     }
     // FluidSynth's default is 0.2. Make 1.0 the maximum.
     // 0 -- 0.2 -- 10.0
-    fluid_synth_set_gain(synth, ((float) volume / 127) * fsynth_gain);
+    fs.fluid_synth_set_gain(synth, ((float) volume / 127) * fsynth_gain);
 }
 
 static void I_FL_PauseSong(void)
@@ -187,8 +367,8 @@ static void I_FL_PlaySong(void *handle, boolean looping)
 {
     if (player)
     {
-        fluid_player_set_loop(player, looping ? -1 : 1);
-        fluid_player_play(player);
+        fs.fluid_player_set_loop(player, looping ? -1 : 1);
+        fs.fluid_player_play(player);
     }
 }
 
@@ -196,7 +376,7 @@ static void I_FL_StopSong(void)
 {
     if (player)
     {
-        fluid_player_stop(player);
+        fs.fluid_player_stop(player);
     }
 }
 
@@ -211,7 +391,7 @@ static void *I_FL_RegisterSong(void *data, int len)
 {
     int result = FLUID_FAILED;
 
-    player = new_fluid_player(synth);
+    player = fs.new_fluid_player(synth);
 
     if (player == NULL)
     {
@@ -222,7 +402,7 @@ static void *I_FL_RegisterSong(void *data, int len)
 
     if (IsMid(data, len))
     {
-        result = fluid_player_add_mem(player, data, len);
+        result = fs.fluid_player_add_mem(player, data, len);
 
         if (result == FLUID_FAILED)
         {
@@ -245,7 +425,7 @@ static void *I_FL_RegisterSong(void *data, int len)
         if (mus2mid(instream, outstream) == 0)
         {
             mem_get_buf(outstream, &outbuf, &outbuf_len);
-            result = fluid_player_add_mem(player, outbuf, outbuf_len);
+            result = fs.fluid_player_add_mem(player, outbuf, outbuf_len);
         }
 
         mem_fclose(instream);
@@ -267,12 +447,12 @@ static void I_FL_UnRegisterSong(void *handle)
 {
     if (player)
     {
-        fluid_synth_program_reset(synth);
-        fluid_synth_system_reset(synth);
+        fs.fluid_synth_program_reset(synth);
+        fs.fluid_synth_system_reset(synth);
 
         Mix_HookMusic(NULL, NULL);
 
-        delete_fluid_player(player);
+        fs.delete_fluid_player(player);
         player = NULL;
     }
 }
@@ -284,15 +464,17 @@ static void I_FL_ShutdownMusic(void)
 
     if (synth)
     {
-        delete_fluid_synth(synth);
+        fs.delete_fluid_synth(synth);
         synth = NULL;
     }
 
     if (settings)
     {
-        delete_fluid_settings(settings);
+        fs.delete_fluid_settings(settings);
         settings = NULL;
     }
+
+    UnloadFluidSynth();
 }
 
 static boolean I_FL_MusicIsPlaying(void)
@@ -302,7 +484,7 @@ static boolean I_FL_MusicIsPlaying(void)
         return false;
     }
 
-    return (fluid_player_get_status(player) == FLUID_PLAYER_PLAYING);
+    return (fs.fluid_player_get_status(player) == FLUID_PLAYER_PLAYING);
 }
 
 static const snddevice_t music_fl_devices[] =
